@@ -1,0 +1,25 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>rclpy_async</name>
+  <version>0.1.0</version>
+  <description>
+    asyncio support for rclpy on ROS 2 Humble: AsyncNode, and async publishers, subscriptions,
+    services, clients, timers and clocks. A backport of ros2/rclpy#1620 that patches nothing.
+  </description>
+  <maintainer email="pedro@kiwibot.com">pepis</maintainer>
+  <license>Apache-2.0</license>
+
+  <depend>rclpy</depend>
+
+  <test_depend>ament_copyright</test_depend>
+  <test_depend>ament_flake8</test_depend>
+  <test_depend>ament_pep257</test_depend>
+  <test_depend>python3-pytest</test_depend>
+  <test_depend>test_msgs</test_depend>
+  <test_depend>std_msgs</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>
