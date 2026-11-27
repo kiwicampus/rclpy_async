@@ -32,6 +32,10 @@ for the middleware thread to make progress. Destroying a client while a service 
 Python listener callback is enough to hang the process. The eventfd never enters Python, so no
 middleware thread ever waits for the GIL.
 
+Action clients take the same path through ``rcl_action``'s five setters, one per inner client
+and subscription. They have no native rclpy setter, so a build without ``pointer`` cannot serve
+them.
+
 A build whose entity handles expose no ``pointer`` falls back to the native rclpy setters, with
 the deadlock above as a known risk.
 """
@@ -46,26 +50,37 @@ RCL_RET_OK = 0
 # void (*)(const void * user_data, size_t number_of_events)
 _CALLBACK_TYPE = ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_size_t)
 
-# kind -> (rcl symbol, native rclpy setter, native rclpy clearer)
+_RCL = 'librcl.so'
+_RCL_ACTION = 'librcl_action.so'
+
+# kind -> (library, rcl symbol, native rclpy setter, native rclpy clearer)
 _KINDS = {
     'message': (
+        _RCL,
         'rcl_subscription_set_on_new_message_callback',
         'set_on_new_message_callback',
         'clear_on_new_message_callback',
     ),
     'request': (
+        _RCL,
         'rcl_service_set_on_new_request_callback',
         'set_on_new_request_callback',
         'clear_on_new_request_callback',
     ),
     'response': (
+        _RCL,
         'rcl_client_set_on_new_response_callback',
         'set_on_new_response_callback',
         'clear_on_new_response_callback',
     ),
+    'goal_response': (_RCL_ACTION, 'rcl_action_client_set_goal_client_callback', '', ''),
+    'cancel_response': (_RCL_ACTION, 'rcl_action_client_set_cancel_client_callback', '', ''),
+    'result_response': (_RCL_ACTION, 'rcl_action_client_set_result_client_callback', '', ''),
+    'feedback': (_RCL_ACTION, 'rcl_action_client_set_feedback_subscription_callback', '', ''),
+    'status': (_RCL_ACTION, 'rcl_action_client_set_status_subscription_callback', '', ''),
 }
 
-_librcl = None
+_libraries: Dict[str, ctypes.CDLL] = {}
 _eventfd_write = None
 # The middleware keeps the file descriptor as its user data, so the eventfd must outlive the
 # call. Closing it early is harmless -- a write to a closed descriptor only returns an error --
@@ -100,24 +115,27 @@ class _Wakeup:
         os.close(self.fd)
 
 
-def _load() -> ctypes.CDLL:
-    global _librcl
-    if _librcl is None:
+def _load(library: str) -> ctypes.CDLL:
+    """Load ``library`` once and type every setter it provides."""
+    lib = _libraries.get(library)
+    if lib is None:
         try:
-            lib = ctypes.CDLL('librcl.so')
+            lib = ctypes.CDLL(library)
         except OSError as ex:
             raise RclEventsUnavailable(
-                'cannot load librcl.so; source the ROS 2 setup file first') from ex
-        for symbol, _, _ in _KINDS.values():
+                f'cannot load {library}; source the ROS 2 setup file first') from ex
+        for kind_library, symbol, _, _ in _KINDS.values():
+            if kind_library != library:
+                continue
             try:
                 fn = getattr(lib, symbol)
             except AttributeError as ex:
                 raise RclEventsUnavailable(
-                    f'librcl.so has no {symbol}; this ROS 2 version is too old') from ex
+                    f'{library} has no {symbol}; this ROS 2 version is too old') from ex
             fn.argtypes = [ctypes.c_void_p, _CALLBACK_TYPE, ctypes.c_void_p]
             fn.restype = ctypes.c_int
-        _librcl = lib
-    return _librcl
+        _libraries[library] = lib
+    return lib
 
 
 def _load_eventfd_write() -> Any:
@@ -134,24 +152,29 @@ def _load_eventfd_write() -> Any:
 
 def _native_setter(handle: Any, kind: str) -> str:
     """Return the native rclpy method name if this build has one, else an empty string."""
-    _, setter, _ = _KINDS[kind]
-    return setter if hasattr(handle, setter) else ''
+    _, _, setter, _ = _KINDS[kind]
+    return setter if setter and hasattr(handle, setter) else ''
 
 
 def set_callback(handle: Any, kind: str, callback: Callable[[int], None]) -> None:
     """
     Ask the middleware to call ``callback(number_of_events)`` when data arrives.
 
-    :param handle: An ``_rclpy`` Subscription, Service or Client.
-    :param kind: One of ``message``, ``request`` or ``response``.
+    :param handle: An ``_rclpy`` Subscription, Service, Client or ActionClient.
+    :param kind: A key of ``_KINDS``: ``message``, ``request``, ``response`` or one of the
+        action client kinds.
     :param callback: Runs on the event loop thread, so it may touch the loop freely.
     """
     if not uses_ctypes(handle):
-        getattr(handle, _native_setter(handle, kind))(callback)
+        setter = _native_setter(handle, kind)
+        if not setter:
+            raise RclEventsUnavailable(
+                f'{type(handle).__name__} has no pointer and no native setter for {kind}')
+        getattr(handle, setter)(callback)
         return
 
-    symbol, _, _ = _KINDS[kind]
-    lib = _load()
+    library, symbol, _, _ = _KINDS[kind]
+    lib = _load(library)
     write_event = _load_eventfd_write()
     pointer = handle.pointer
     wakeup = _Wakeup(callback)
@@ -172,16 +195,17 @@ def clear_callback(handle: Any, kind: str) -> None:
     entity reads freed memory.
     """
     if not uses_ctypes(handle):
-        _, _, clearer = _KINDS[kind]
-        getattr(handle, clearer)()
+        _, _, _, clearer = _KINDS[kind]
+        if clearer:
+            getattr(handle, clearer)()
         return
 
-    symbol, _, _ = _KINDS[kind]
+    library, symbol, _, _ = _KINDS[kind]
     pointer = handle.pointer
     wakeup = _alive.pop((pointer, kind), None)
     if wakeup is None:
         return
-    lib = _load()
+    lib = _load(library)
     # ctypes rejects None for a CFUNCTYPE argument, so pass a NULL function pointer.
     ret = getattr(lib, symbol)(ctypes.c_void_p(pointer), _CALLBACK_TYPE(), None)
     # rcl no longer holds the descriptor, so the eventfd can go.

@@ -21,10 +21,13 @@ from rclpy.context import Context
 from rclpy.impl.implementation_singleton import rclpy_implementation as _rclpy
 from rclpy.node import Node
 from rclpy.parameter import Parameter
+from rclpy.qos import qos_profile_action_status_default
 from rclpy.qos import qos_profile_services_default
 from rclpy.qos import QoSProfile
+from rclpy.type_support import check_for_type_support
 from rclpy.type_support import check_is_valid_msg_type, check_is_valid_srv_type
 
+from .action_client import AsyncActionClient
 from .client import AsyncClient
 from .clock import AsyncClock
 from .publisher import AsyncPublisher
@@ -368,6 +371,53 @@ class AsyncNode(Node):
 
         client = AsyncClient(
             self.context, client_impl, srv_type, srv_name, qos_profile,
+            on_destroy=self._entities.discard, tg=self._tg)
+        self._entities.add(client)
+        return client
+
+    def create_action_client(
+        self,
+        action_type: type,
+        action_name: str,
+        *,
+        goal_service_qos_profile: QoSProfile = qos_profile_services_default,
+        result_service_qos_profile: QoSProfile = qos_profile_services_default,
+        cancel_service_qos_profile: QoSProfile = qos_profile_services_default,
+        feedback_sub_qos_profile: QoSProfile = QoSProfile(depth=10),
+        status_sub_qos_profile: QoSProfile = qos_profile_action_status_default,
+        **kwargs: Any,
+    ) -> AsyncActionClient:
+        """
+        Create a new action client.
+
+        :param action_type: The action type.
+        :param action_name: The name of the action; its services and topics hang off it.
+        :param goal_service_qos_profile: QoS profile for the goal service.
+        :param result_service_qos_profile: QoS profile for the result service.
+        :param cancel_service_qos_profile: QoS profile for the cancel service.
+        :param feedback_sub_qos_profile: QoS profile for the feedback subscription.
+        :param status_sub_qos_profile: QoS profile for the status subscription.
+        :return: The new action client.
+        :raises RuntimeError: If the node has been destroyed.
+        """
+        if self._destroyed.is_set():
+            raise RuntimeError('Cannot create action client on a destroyed node')
+        check_for_type_support(action_type)
+
+        with self.handle:
+            client_impl = _rclpy.ActionClient(
+                self.handle,
+                action_type,
+                action_name,
+                goal_service_qos_profile.get_c_qos_profile(),
+                result_service_qos_profile.get_c_qos_profile(),
+                cancel_service_qos_profile.get_c_qos_profile(),
+                feedback_sub_qos_profile.get_c_qos_profile(),
+                status_sub_qos_profile.get_c_qos_profile())
+
+        client = AsyncActionClient(
+            client_impl, action_type, action_name,
+            self.get_logger().get_child('action_client'),
             on_destroy=self._entities.discard, tg=self._tg)
         self._entities.add(client)
         return client

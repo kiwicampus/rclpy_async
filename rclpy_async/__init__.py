@@ -34,6 +34,7 @@ Example::
 
 from . import _compat  # noqa: F401  installs the 3.11 asyncio API on Python 3.10
 from ._rcl_events import RclEventsUnavailable
+from .action_client import AsyncActionClient, AsyncClientGoalHandle
 from .client import AsyncClient
 from .clock import AsyncClock
 from .exceptions import TimeSourceChangedError
@@ -47,7 +48,9 @@ from .timer_info import TimerInfo
 from .utilities import init
 
 __all__ = [
+    'AsyncActionClient',
     'AsyncClient',
+    'AsyncClientGoalHandle',
     'AsyncClock',
     'AsyncNode',
     'AsyncPublisher',
