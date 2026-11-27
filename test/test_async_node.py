@@ -13,7 +13,9 @@
 # limitations under the License.
 
 import asyncio
-from collections.abc import Generator
+from collections.abc import Callable, Generator
+import time
+from typing import Any
 
 import pytest
 
@@ -257,6 +259,19 @@ async def test_graph_discovery_methods() -> None:
         assert fq_name == '/test_ns/test_graph_node'
 
 
+async def graph_settled(probe: Callable[[], Any], expected: Any, timeout_s: float = 5.0) -> Any:
+    """Return probe() once it equals expected, or its last value after timeout_s.
+
+    The rmw graph cache learns of a new endpoint asynchronously, even one on the same node.
+    """
+    deadline = time.monotonic() + timeout_s
+    value = probe()
+    while value != expected and time.monotonic() < deadline:
+        await asyncio.sleep(0.01)
+        value = probe()
+    return value
+
+
 @pytest.mark.asyncio
 async def test_count_methods() -> None:
     """Count methods work on AsyncNode."""
@@ -265,8 +280,8 @@ async def test_count_methods() -> None:
         node.create_publisher(Strings, topic, TEST_QOS)
         async def _noop(msg: Strings) -> None: pass
         node.create_subscription(Strings, topic, _noop, TEST_QOS)
-        assert node.count_publishers(topic) == 1
-        assert node.count_subscribers(topic) == 1
+        assert await graph_settled(lambda: node.count_publishers(topic), 1) == 1
+        assert await graph_settled(lambda: node.count_subscribers(topic), 1) == 1
 
 
 @pytest.mark.asyncio
@@ -275,6 +290,8 @@ async def test_endpoint_info_methods() -> None:
     async with AsyncNode('test_endpoint_node') as node:
         node.create_publisher(BasicTypes, '/test_endpoint_topic', TEST_QOS)
 
+        await graph_settled(
+            lambda: len(node.get_publishers_info_by_topic('/test_endpoint_topic')), 1)
         pub_info = node.get_publishers_info_by_topic('/test_endpoint_topic')
         assert len(pub_info) == 1
         assert pub_info[0].node_name == 'test_endpoint_node'
@@ -282,6 +299,8 @@ async def test_endpoint_info_methods() -> None:
         async def _noop(msg: BasicTypes) -> None: pass
         node.create_subscription(
             BasicTypes, '/test_endpoint_topic', _noop, TEST_QOS)
+        await graph_settled(
+            lambda: len(node.get_subscriptions_info_by_topic('/test_endpoint_topic')), 1)
         sub_info = node.get_subscriptions_info_by_topic('/test_endpoint_topic')
         assert len(sub_info) == 1
         assert sub_info[0].node_name == 'test_endpoint_node'
