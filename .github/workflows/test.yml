@@ -1,0 +1,56 @@
+name: test
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: ${{ matrix.distro }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        distro: [humble, jazzy]
+    container:
+      image: ros:${{ matrix.distro }}-ros-base
+    env:
+      # Noble's pip refuses system installs without this; Jammy's ignores it.
+      PIP_BREAK_SYSTEM_PACKAGES: "1"
+      ROS_LOCALHOST_ONLY: "1"
+      ROS_AUTOMATIC_DISCOVERY_RANGE: LOCALHOST
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: src/rclpy_async
+
+      - name: Install dependencies
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends python3-pip
+          rosdep update --rosdistro "$ROS_DISTRO"
+          rosdep install --from-paths src --ignore-src -y --rosdistro "$ROS_DISTRO"
+          # The asyncio backports for Python 3.10 are not packaged for Jammy.
+          pip install pytest==8.4.2 pytest-asyncio==1.4.0 "taskgroup>=0.2.2" "exceptiongroup>=1.2"
+
+      - name: Build
+        run: |
+          source "/opt/ros/$ROS_DISTRO/setup.bash"
+          colcon build --symlink-install --event-handlers console_direct+
+
+      - name: Test
+        # launch_testing's pytest plugin breaks collection, so plugins are loaded by hand.
+        env:
+          PYTEST_DISABLE_PLUGIN_AUTOLOAD: "1"
+        run: |
+          source install/setup.bash
+          python3 -m pytest -p pytest_asyncio.plugin -v src/rclpy_async/test
