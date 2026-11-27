@@ -39,8 +39,9 @@ jobs:
           apt-get install -y --no-install-recommends python3-pip
           rosdep update --rosdistro "$ROS_DISTRO"
           rosdep install --from-paths src --ignore-src -y --rosdistro "$ROS_DISTRO"
-          # The asyncio backports for Python 3.10 are not packaged for Jammy.
-          pip install pytest==8.4.2 pytest-asyncio==1.4.0 "taskgroup>=0.2.2" "exceptiongroup>=1.2"
+          # The asyncio backports for Python 3.10 are not packaged for Jammy; Noble's
+          # Debian pytest deps have no RECORD, so pip installs over them instead of upgrading.
+          pip install --ignore-installed pytest==8.4.2 pytest-asyncio==1.4.0 "taskgroup>=0.2.2" "exceptiongroup>=1.2"
 
       - name: Build
         run: |
